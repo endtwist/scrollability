@@ -1,5 +1,24 @@
-/* See LICENSE for terms of usage */
+/**
+ * Copyright 2011 Joe Hewitt
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
+ * WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
+ * License for the specific language governing permissions and limitations
+ * under the License.
+ **/
 (function() {
+
+if (!navigator.userAgent.match(/iPhone/) && !navigator.userAgent.match(/iPad/) && !navigator.userAgent.match(/iPod/)) {
+    document.documentElement.className += " no-scrollability";
+} else {
+    document.documentElement.className += " scrollability";
+}
 
 // Number of pixels finger must move to determine horizontal or vertical motion
 var kLockThreshold = 10;
@@ -40,9 +59,11 @@ var isTouch = "ontouchstart" in window;
 
 // ===============================================================================================
 
-var startX, startY, touchX, touchY, touchDown, touchMoved, onScrollEvt, justChangedOrientation;
+var startX, startY, touchX, touchY, touchDown, touchMoved, onScrollEvt, useOnScrollEvt, justChangedOrientation;
 var animationInterval = 0;
 var touchTargets = [];
+var setInterval = window.requestInterval || window.setInterval;
+var setTimeout = window.requestTimeout || window.setTimeout;
 
 var scrollers = {
     'horizontal': createXTarget,
@@ -51,12 +72,14 @@ var scrollers = {
 
 window.scrollability = {
     globalScrolling: false,
+    useOnScrollEvt: false,
     scrollers: scrollers,
 
     flashIndicators: function() {
-        var scrollables = document.querySelectorAll('.scrollable.vertical');
-        for (var i = 0; i < scrollables.length; ++i) {
-            scrollability.scrollTo(scrollables[i], 0, 0, 20, true);
+        var i, scrollables = document.querySelectorAll('.scrollable.vertical');
+        for (i = 0; i < scrollables.length; ++i) {
+            var scrollable = scrollables[i];
+            scrollability.scrollToCeiling(scrollable);
         }
     },
     
@@ -65,9 +88,15 @@ window.scrollability = {
         if (scrollables.length) {
             var scrollable = scrollables[0];
             if (scrollable.className.indexOf('vertical') != -1) {
-                scrollability.scrollTo(scrollable, 0, 0, kScrollToTopTime);
+                scrollability.scrollToCeiling(scrollable, kScrollToTopTime);
             }
         }
+    },
+    
+    scrollToCeiling: function(element, animationTime) {
+        animationTime = animationTime || 0;
+        var target = createTargetForElement(element);
+        scrollability.scrollTo(element, 0, target.roof, animationTime);
     },
 
     scrollTo: function(element, x, y, animationTime, muteDelegate) {
@@ -140,6 +169,7 @@ function onTouchStart(event) {
     touchMoved = false;
 
     touchTargets = getTouchTargets(event.target, touchX, touchY, startTime);
+
     if (!touchTargets.length && !scrollability.globalScrolling) {
         return true;
     }
@@ -149,9 +179,8 @@ function onTouchStart(event) {
         touched = setTouched(touchCandidate);
     }, 50);
 
-    var d = document;
-    d.addEventListener('touchmove', onTouchMove, false);
-    d.addEventListener('touchend', onTouchEnd, false);
+    document.addEventListener('touchmove', onTouchMove, false);
+    document.addEventListener('touchend', onTouchEnd, false);
 
     animationInterval = setInterval(touchAnimation, 0);
 
@@ -206,8 +235,8 @@ function onTouchStart(event) {
             } catch(e) {}
         }
 
-        d.removeEventListener('touchmove', onTouchMove, false);
-        d.removeEventListener('touchend', onTouchEnd, false);
+        document.removeEventListener('touchmove', onTouchMove, false);
+        document.removeEventListener('touchend', onTouchEnd, false);
         touchDown = false;
     }
 }
@@ -235,7 +264,8 @@ function wrapTarget(target, startX, startY, startTime) {
     var stillThreshold = 20;
     var snapped = false;
     var locked = false;
-    var pullState = 0;
+    var isPullingUp = false;
+    var isPullingDown = false;
 
     if (paginated) {
         var excess = Math.round(Math.abs(absMin) % viewport);
@@ -290,10 +320,10 @@ function wrapTarget(target, startX, startY, startTime) {
             velocity = delta / deltaTime;
 
             // Apply resistance along the edges
-            if (position > max && constrained) {
+            if (position > absMax && constrained) {
                 var excess = position - max;
                 velocity *= (1.0 - excess / bounceLimit);
-            } else if (position < min && constrained) {
+            } else if (position < absMin && constrained) {
                 var excess = min - position;
                 velocity *= (1.0 - excess / bounceLimit);
             }
@@ -303,7 +333,7 @@ function wrapTarget(target, startX, startY, startTime) {
                 // or to snap back to the current page
                 snapped = true;
                 if (Math.abs(position - max) > pageLimit || Math.abs(velocity) > kPageEscapeVelocity) {
-                    if (position > max) {
+                    if (position >= max) {
                         if (max != absMax) {
                             max += viewport+pageSpacing;
                             min += viewport+pageSpacing;
@@ -327,7 +357,7 @@ function wrapTarget(target, startX, startY, startTime) {
                 }
             }
 
-            if (position > max && constrained) {
+            if (position >= max && constrained) {
                 if (velocity > 0) {
                     // Slowing down
                     var excess = position - max;
@@ -344,7 +374,7 @@ function wrapTarget(target, startX, startY, startTime) {
                     position = easeOutExpo(decelerating, decelOrigin, decelDelta, kBounceTime);
                     return update(position, ++decelerating <= kBounceTime && Math.floor(position) > max);
                 }
-            } else if (position < min && constrained) {
+            } else if (position <= min && constrained) {
                 if (velocity < 0) {
                     // Slowing down
                     var excess = min - position;
@@ -427,9 +457,9 @@ function wrapTarget(target, startX, startY, startTime) {
         if (paginated) {
             var pageIndex = Math.round(position/viewport);
             update(pageIndex * (viewport+pageSpacing));
-        } else  if (position > max && constrained) {
+        } else  if (position > absMax && constrained) {
             update(max);
-        } else if (position < min && constrained) {
+        } else if (position < absMin && constrained) {
             update(min);
         }
 
@@ -444,27 +474,56 @@ function wrapTarget(target, startX, startY, startTime) {
     }
 
     function pullToRefresh(released) {
+        if(!target.pullUpToRefresh && !target.pullDownToRefresh)
+            return function() {}
+
+        var pullUpMin, pullDownMin;
+        if(target.pullUpToRefresh)
+            pullUpMin = min - target.pullUpToRefresh.offsetHeight / 1.5;
+        if(target.pullDownMin)
+            pullDownMin = max + target.pullDownToRefresh.offsetHeight;
+        var pullState;
+        
         return function() {
-            if(target.pullUpToRefresh) {
-                var pullMin = min - (target.pullUpToRefresh.offsetHeight / 2),
-                    state;
-
-                if(!released && ((position < pullMin && pullState) || (position > pullMin && !pullState)))
+            if (target.pullUpToRefresh || target.pullDownToRefresh) {
+                if ( !released && 
+                        (
+                            (isPullingDown && ((pullDownMin < position && pullState) || (pullDownMin > position && !pullState)))
+                            || 
+                            (isPullingUp && ((position < pullUpMin && pullState) || (position > pullUpMin && !pullState)))
+                        )
+                ) {
                     return;
-
-                if(released && position < pullMin) {
-                    state = 'pulledUp';
-                    pullState = 0;
-                } else if(pullState && position > pullMin) {
-                    state = 'pullCancel';
-                    pullState = 0;
-                } else if(position < pullMin) {
-                    state = 'pullingUp';
-                    pullState = 1;
                 }
-
+                
+                if (released && (position > pullDownMin)) {
+                    pullState = 'pulledDown';
+                    isPullingUp = false;
+                    isPullingDown = false;
+                } else if (released && (position < pullUpMin)) {
+                    pullState = 'pulledUp';
+                    isPullingUp = false;
+                    isPullingDown = false;
+                } else if (isPullingDown && (position < pullDownMin)) {
+                    pullState = 'pullDownCancel';
+                    isPullingUp = false;
+                    isPullingDown = false;
+                } else if (isPullingUp && (position > pullUpMin)) {
+                    pullState = 'pullUpCancel';
+                    isPullingUp = false;
+                    isPullingDown = false;
+                } else if (position > pullDownMin) {
+                    pullState = 'pullingDown';
+                    isPullingUp = false;
+                    isPullingDown = true;
+                } else if (position < pullUpMin) {
+                    pullState = 'pullingUp';
+                    isPullingUp = true;
+                    isPullingDown = false;
+                }
+                
                 var evt = document.createEvent('Event');
-                evt.initEvent(state, true, false);
+                evt.initEvent(pullState, true, false);
                 target.node.dispatchEvent(evt);
             }
         }
@@ -595,7 +654,7 @@ function moveElement(element, x, y) {
             +(y ? (y+'px') : '0')+')';
     }
 
-    if(!onScrollEvt) {
+    if(!onScrollEvt && useOnScrollEvt) {
         onScrollEvt = setTimeout(function() {
             var evt = document.createEvent('Event');
             // Don't want this to bubble because of scrollToTop
@@ -646,6 +705,8 @@ function createXTarget(element) {
         max: 0,
         viewport: parent.offsetWidth,
         bounce: parent.offsetWidth * kBounceLimit,
+        pullUpToRefresh: false,
+        pullDownToRefresh: false,
         constrained: true,
         delegate: element.scrollDelegate,
 
@@ -669,16 +730,25 @@ function createXTarget(element) {
 
 function createYTarget(element) {
     var parent = element.parentNode,
-        pullUpToRefresh = parent.getElementsByClassName('pull-to-refresh')[0];
+        pullUpToRefresh = parent.getElementsByClassName('pull-up-to-refresh')[0],
+        pullDownToRefresh = parent.getElementsByClassName('pull-down-to-refresh')[0],
+        hiddenAbove = parent.getElementsByClassName('hidden-above')[0];
+    
+    var min = -parent.scrollHeight + parent.offsetHeight + (pullUpToRefresh ? pullUpToRefresh.offsetHeight : 0);
+    var max = (pullDownToRefresh ? -pullDownToRefresh.offsetHeight : 0);
+    var roof = max + (hiddenAbove ? -hiddenAbove.offsetHeight : 0);
+    
     return {
         node: element,
         scrollbar: initScrollbar(element),
-        min: -parent.scrollHeight + parent.offsetHeight
-             + (pullUpToRefresh ? pullUpToRefresh.offsetHeight / 2 : 0),
-        max: 0,
+        min: min,
+        max: max,
+        roof: roof,
         viewport: parent.offsetHeight,
         bounce: parent.offsetHeight * kBounceLimit,
         pullUpToRefresh: pullUpToRefresh ? pullUpToRefresh : false,
+        pullDownToRefresh: pullDownToRefresh ? pullDownToRefresh : false,
+        hiddenAbove: hiddenAbove ? hiddenAbove : false,
         constrained: true,
         delegate: element.scrollDelegate,
 
